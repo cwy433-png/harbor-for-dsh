@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0.35" y2="1">
+      <stop offset="0" stop-color="#5B7CFF"/>
+      <stop offset="1" stop-color="#2C3EC4"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Squircle-ish plate, inset to macOS icon proportions. -->
+  <rect x="96" y="96" width="832" height="832" rx="186" fill="url(#bg)"/>
+
+  <!-- A mooring ring above a waterline: a harbour, not a whale. Deliberately
+       unlike the DeepSeek mark, because this is an unofficial launcher. -->
+  <circle cx="512" cy="420" r="150" fill="none" stroke="#ffffff" stroke-width="54"/>
+  <circle cx="512" cy="420" r="40" fill="#ffffff"/>
+
+  <g stroke="#ffffff" stroke-width="44" stroke-linecap="round" fill="none" opacity="0.92">
+    <path d="M236 664 q69 -52 138 0 q69 52 138 0 q69 -52 138 0 q69 52 138 0"/>
+    <path d="M300 786 q60 -46 120 0 q60 46 120 0 q60 -46 120 0" opacity="0.6"/>
+  </g>
+</svg>
