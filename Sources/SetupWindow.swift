@@ -122,6 +122,17 @@ func presentError(_ error: HarborError, fatal: Bool) {
     let alert = NSAlert()
     alert.alertStyle = fatal ? .critical : .warning
     alert.messageText = error.summary
+    alert.informativeText = alertBody(for: error)
+    alert.addButton(withTitle: fatal ? "Quit" : "OK")
+    alert.addButton(withTitle: "Show Log")
+    if alert.runModal() == .alertSecondButtonReturn {
+        revealLog()
+    }
+    if fatal { NSApp.terminate(nil) }
+}
+
+/// The detail and recovery text of an error, trimmed to fit a dialog.
+func alertBody(for error: HarborError) -> String {
     var body = error.detail
     if let recovery = error.recovery {
         body = body.isEmpty ? recovery : "\(body)\n\n\(recovery)"
@@ -131,14 +142,13 @@ func presentError(_ error: HarborError, fatal: Bool) {
     if lines.count > 12 {
         body = (["…"] + lines.suffix(12)).joined(separator: "\n")
     }
-    alert.informativeText = body
-    alert.addButton(withTitle: fatal ? "Quit" : "OK")
-    alert.addButton(withTitle: "Show Log")
-    if alert.runModal() == .alertSecondButtonReturn {
-        NSWorkspace.shared.selectFile(
-            Paths.logs.appendingPathComponent("harbor.log").path,
-            inFileViewerRootedAtPath: Paths.logs.path
-        )
-    }
-    if fatal { NSApp.terminate(nil) }
+    return body
+}
+
+@MainActor
+func revealLog() {
+    NSWorkspace.shared.selectFile(
+        Paths.logs.appendingPathComponent("harbor.log").path,
+        inFileViewerRootedAtPath: Paths.logs.path
+    )
 }

@@ -231,11 +231,122 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.scheduleUpdateChecks()
             },
             onFailure: { [weak self] error in
-                self?.setupWindow?.close()
-                self?.setupWindow = nil
-                presentError(error, fatal: true)
+                guard let self else { return }
+                self.setupWindow?.close()
+                self.setupWindow = nil
+                Task { await self.recoverFromStartFailure(error) }
             }
         )
+    }
+
+    // MARK: - Recovering from a failed start
+
+    private enum StartFailureChoice {
+        case update, rollBack, useReleased, showLog, quit
+    }
+
+    /// A harness that will not start is exactly when an update or a roll back
+    /// is most needed, and neither is reachable once the app has quit. Update
+    /// checks are only scheduled after a successful start, so quitting here
+    /// left a broken release — or a plugin in `~/.dsh` that a release broke —
+    /// stuck in place with no way out but a terminal.
+    ///
+    /// Every path that restarts the server reports back through
+    /// `launchServer`, so a recovery that also fails lands here again rather
+    /// than quitting.
+    private func recoverFromStartFailure(_ error: HarborError) async {
+        Log.write("error: \(error.summary)\(error.detail.isEmpty ? "" : " | \(error.detail)")")
+        while true {
+            switch askAfterStartFailure(error) {
+            case .quit:
+                NSApp.terminate(nil)
+                return
+            case .showLog:
+                revealLog()
+            case .useReleased:
+                useReleasedVersion(nil)
+                return
+            case .rollBack:
+                if performRollBack() { return }
+            case .update:
+                if await updateAfterStartFailure() { return }
+            }
+        }
+    }
+
+    private func askAfterStartFailure(_ error: HarborError) -> StartFailureChoice {
+        let usingCheckout = state.developerCheckoutPath != nil
+        let previous = state.previousHarnessVersion.flatMap {
+            RuntimeManager.isInstalled(version: $0) ? $0 : nil
+        }
+
+        let alert = NSAlert()
+        alert.alertStyle = .critical
+        alert.messageText = error.summary
+        alert.informativeText = alertBody(for: error) + (usingCheckout
+            ? "\n\nThis is a local checkout. Rebuild it, or switch back to the released version."
+            : "\n\nA newer release, or the version used before, may start where this one does not.")
+
+        var choices: [StartFailureChoice] = []
+        if usingCheckout {
+            alert.addButton(withTitle: "Use Released Version")
+            choices.append(.useReleased)
+        } else {
+            alert.addButton(withTitle: "Check for Updates…")
+            choices.append(.update)
+            if let previous {
+                alert.addButton(withTitle: "Roll Back to \(previous)…")
+                choices.append(.rollBack)
+            }
+        }
+        alert.addButton(withTitle: "Show Log")
+        choices.append(.showLog)
+        alert.addButton(withTitle: "Quit")
+        choices.append(.quit)
+
+        let index = alert.runModal().rawValue - NSApplication.ModalResponse.alertFirstButtonReturn.rawValue
+        return choices.indices.contains(index) ? choices[index] : .quit
+    }
+
+    /// True once an update has started; false returns to the failure dialog.
+    private func updateAfterStartFailure() async -> Bool {
+        guard let node = nodeExecutable else { return false }
+        let current = RuntimeManager.activeVersion()
+        let latest: String
+        do {
+            latest = try await RuntimeManager.latestHarnessVersion()
+            state.lastUpdateCheck = Date()
+            state.save()
+        } catch let error as HarborError {
+            presentError(error, fatal: false)
+            return false
+        } catch {
+            presentError(HarborError("Could not check for updates", detail: error.localizedDescription), fatal: false)
+            return false
+        }
+
+        guard current == nil || Version(latest) > Version(current!) else {
+            let alert = NSAlert()
+            alert.messageText = "No newer release"
+            alert.informativeText = "DeepSeek Harness \(current ?? latest) is the latest release."
+            alert.runModal()
+            return false
+        }
+
+        let alert = NSAlert()
+        alert.messageText = "Update to DeepSeek Harness \(latest)?"
+        alert.informativeText = """
+        Installed: \(current ?? "none")
+
+        DeepSeek Harness is a developer preview and states that releases may break compatibility. Before updating, this app copies your sessions and settings so you can roll back.
+        """
+        alert.addButton(withTitle: "Update")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return false }
+        state.notifiedVersion = latest
+        state.save()
+        await performUpdate(to: latest, node: node, from: current)
+        return true
     }
 
     // MARK: - Updating
@@ -396,10 +507,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             setup.close()
             setupWindow = nil
             presentError(HarborError("Update failed", detail: error.localizedDescription), fatal: false)
+            if let current {
+                launchServer(node: node, entryPoint: RuntimeManager.entryPoint(in: RuntimeManager.slot(for: current)))
+            }
         }
     }
 
     @objc private func rollBack(_ sender: Any?) {
+        performRollBack()
+    }
+
+    /// True once the previous version has been started.
+    @discardableResult
+    private func performRollBack() -> Bool {
         guard let node = nodeExecutable,
               let previous = state.previousHarnessVersion,
               RuntimeManager.isInstalled(version: previous)
@@ -408,7 +528,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             alert.messageText = "No previous version to roll back to"
             alert.informativeText = "A previous version is kept only after an in-app update."
             alert.runModal()
-            return
+            return false
         }
 
         let alert = NSAlert()
@@ -421,7 +541,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         """
         alert.addButton(withTitle: "Roll Back")
         alert.addButton(withTitle: "Cancel")
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        guard alert.runModal() == .alertFirstButtonReturn else { return false }
 
         do {
             server.stop()
@@ -432,10 +552,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             state.save()
             mainWindow?.close()
             launchServer(node: node, entryPoint: RuntimeManager.entryPoint(in: RuntimeManager.slot(for: previous)))
+            return true
         } catch let error as HarborError {
             presentError(error, fatal: false)
+            return false
         } catch {
             presentError(HarborError("Roll back failed", detail: error.localizedDescription), fatal: false)
+            return false
         }
     }
 
